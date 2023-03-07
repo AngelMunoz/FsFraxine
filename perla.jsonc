@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/AngelMunoz/Perla/dev/perla.schema.json",
+  "index": "./index.html",
+  "fable": {
+    "project": "./src/App.fsproj"
+  },
+  "mountDirectories": {
+    "/src": "./src"
+  },
+  "esbuild": {
+    "minify": false
+  }
+}
