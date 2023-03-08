@@ -1,4 +1,4 @@
-# Perla + Sutil
+# Perla
 
 Visit the Perla Docs at https://perla-docs.web.app
 
