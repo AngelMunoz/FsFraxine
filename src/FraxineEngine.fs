@@ -11,8 +11,10 @@ open Feliz.Styles
 open Fable.Core
 open FSharp.Data.Adaptive
 open Fable.Core.JsInterop
+open FsToolkit.ErrorHandling
 open System.Text.RegularExpressions
 open System
+
 
 [<Emit("typeof $0 === $1")>]
 let jsTypeof obj (type': string) : bool = jsNative
@@ -46,7 +48,8 @@ type Reflect =
 type FraxineHtmlElement =
   inherit HTMLElement
 
-  abstract __subscriptions: (IDisposable seq) option
+  abstract __subscriptions: (ResizeArray<IDisposable>) option with get, set
+  abstract __dispose: unit -> unit
 
 
 let getProxiedElement (el: Element) =
@@ -81,6 +84,14 @@ let getProxiedElement (el: Element) =
 
 
 
+type Cell<'TValue>(?initial: 'TValue) =
+  let mutable _value = initial
+
+  member _.Value
+    with get () = _value
+    and set (value: 'TValue option) = _value <- value
+
+
 type FraxineAttr =
   | Bool of boolvalue: bool
   | String of stringvalue: string
@@ -98,20 +109,21 @@ type FraxineStyleSheet = {
 
 type FraxineInlineStyle = { properties: FraxineCssprop seq }
 
+let isShadowElement (element: Element) =
+  match element.shadowRoot |> Option.ofObj with
+  | Some _ -> true
+  | None -> false
+
 [<RequireQualifiedAccess>]
 type FraxineNode =
-  | Text of string
+  | Text of Text
   | Element of Element
   | Fragment of DocumentFragment
   | Attribute of attrName: string * attrValue: FraxineAttr
   | Stylesheet of FraxineStyleSheet
   | InlineStyle of FraxineInlineStyle
   | Event of name: string * handler: (Event -> unit)
-  | AdaptiveText of aval<string>
-  | AdaptiveElement of aval<Element>
-  | AdaptiveFragment of aval<DocumentFragment>
-  | AdaptiveStylesheet of aval<FraxineStyleSheet>
-  | AdaptiveInlineStyle of aval<FraxineInlineStyle>
+  | AdaptiveNode of aval<FraxineNode>
 
 let stringifyCssProp (prop: FraxineCssprop) = $"{prop.key}:{prop.value};"
 
@@ -134,116 +146,139 @@ let replace (parent: Node, newEl, oldEl) =
 
 let setAttribute (element: Element, attribute) = element.setAttribute attribute
 
-type Cell<'TValue>(?initial: 'TValue) =
-  let mutable _value = initial
+let setUpAdaptiveNode (target: FraxineHtmlElement) (anode: aval<FraxineNode>) =
+  // TODO: Continue here tomorrow
+  anode.AddCallback(fun value -> console.log (target, box value)) |> ignore
 
-  member _.Value
-    with get () = _value
-    and set (value: 'TValue option) = _value <- value
+  ()
 
 
-let setupNode (parent: Element) child =
-  let shadowRoot = parent?shadowRoot |> Option.ofObj
-  let parent = getProxiedElement parent
+let setUpFraxineNode (target: Element) (newNode: FraxineNode) : unit =
+  let target = target :?> FraxineHtmlElement
 
-  let shadowOrParent = shadowRoot |> Option.defaultValue parent
+  let subs: ResizeArray<IDisposable> =
+    target.__subscriptions
+    |> Option.defaultWith (fun () ->
+      let subs = ResizeArray<IDisposable>()
+      target.__subscriptions <- Some subs
+      subs)
 
-  let subs = ResizeArray<IDisposable>()
+  let targetOrShadow =
+    target.shadowRoot
+    |> Option.ofObj
+    |> Option.map (fun target -> target :> Element)
+    |> Option.defaultValue target
 
-  parent?__subscriptions <- subs
-
-  match child with
-  | FraxineNode.Element child -> append (shadowOrParent, child)
-  | FraxineNode.Text text ->
-    append (shadowOrParent, document.createTextNode (text))
-  | FraxineNode.Fragment fragment -> append (shadowOrParent, fragment)
+  match newNode with
+  | FraxineNode.Element child -> append (targetOrShadow, child)
+  | FraxineNode.Text child -> append (targetOrShadow, child)
+  | FraxineNode.Fragment fragment -> append (targetOrShadow, fragment)
   | FraxineNode.Attribute(name, Bool true) ->
-    setAttribute (shadowOrParent, (name, ""))
+    setAttribute (targetOrShadow, (name, ""))
   | FraxineNode.Attribute(name, Bool false) ->
-    shadowOrParent.removeAttribute (name)
+    targetOrShadow.removeAttribute (name)
   | FraxineNode.Attribute(name, AdaptiveBool value) ->
     let initial = AVal.force value
 
     if initial then
-      setAttribute (shadowOrParent, (name, ""))
+      setAttribute (targetOrShadow, (name, ""))
 
     value.AddCallback(fun value ->
       if value then
-        setAttribute (shadowOrParent, (name, ""))
+        setAttribute (targetOrShadow, (name, ""))
       else
-        shadowOrParent.removeAttribute (name))
+        targetOrShadow.removeAttribute (name))
     |> subs.Add
 
   | FraxineNode.Attribute(name, AdaptiveString value) ->
     let initial = AVal.force value
 
     if not (String.IsNullOrWhiteSpace initial) then
-      setAttribute (shadowOrParent, (name, initial))
+      setAttribute (targetOrShadow, (name, initial))
 
     value.AddCallback(fun value ->
       if not (String.IsNullOrWhiteSpace initial) then
-        setAttribute (shadowOrParent, (name, value))
+        setAttribute (targetOrShadow, (name, value))
       else
-        shadowOrParent.removeAttribute (name))
+        targetOrShadow.removeAttribute (name))
     |> subs.Add
 
   | FraxineNode.Attribute(name, String value) ->
-    setAttribute (shadowOrParent, (name, value))
+    setAttribute (targetOrShadow, (name, value))
   | FraxineNode.Event(name, handler) ->
     let name = name.ToLowerInvariant()
-    shadowOrParent.addEventListener (name, handler)
+    targetOrShadow.addEventListener (name, handler)
 
   | FraxineNode.Stylesheet stylesheet ->
     let style = cssFromFss stylesheet
 
     let adopted =
-      shadowOrParent?adoptedStyleSheets
+      targetOrShadow?adoptedStyleSheets
       |> Option.ofObj
-      |> Option.defaultValue [||]
+      |> Option.defaultValue (ResizeArray())
 
-    match shadowRoot with
-    | Some root -> root?adoptedStyleSheets <- [| yield! adopted; style |]
-    | None -> document?adoptedStyleSheets <- [| yield! adopted; style |]
+    adopted.Add(style)
 
-    ()
+    match isShadowElement (target) with
+    | true -> target.shadowRoot?adoptedStyleSheets <- adopted
+    | false -> document?adoptedStyleSheets <- adopted
   | FraxineNode.InlineStyle styles ->
     let styles =
       styles.properties
       |> Seq.fold (fun current next -> $"{current}{stringifyCssProp next}") ""
 
-    shadowOrParent.setAttribute ("style", styles)
-
-  | FraxineNode.AdaptiveText value ->
-    let content = AVal.force value
-    let textNode = document.createTextNode (content)
-    append (shadowOrParent, textNode)
-
-    value.AddCallback(fun (value: string) -> textNode.textContent <- value)
-    |> subs.Add
-  | FraxineNode.AdaptiveElement value -> ()
-  | FraxineNode.AdaptiveFragment value -> ()
-  | FraxineNode.AdaptiveStylesheet value -> ()
-  | FraxineNode.AdaptiveInlineStyle value -> ()
+    targetOrShadow.setAttribute ("style", styles)
+  | FraxineNode.AdaptiveNode anode -> setUpAdaptiveNode target anode
 
 
 
 
-let makeNode useShadowDom =
-  fun tag (children: FraxineNode seq) ->
-    let target = document.createElement tag
+let setupNode (target: Element) child =
+  let target = getProxiedElement target
+  let subs = ResizeArray<IDisposable>()
 
-    match useShadowDom with
-    | true ->
-      target.attachShadow (unbox box {| mode = EncapsulationMode.Open |})
-      |> ignore
-    | false -> ()
+  target?__subscriptions <- subs
 
-    children |> Seq.iter (setupNode target)
-    target :> Element |> FraxineNode.Element
+  target?__dispose <-
+    (fun () ->
+      for index in 0 .. target.childNodes.length - 1 do
+        try
+          match target.childNodes.item (index) |> Option.ofObj with
+          | Some node -> node?__dispose ()
+          | None -> ()
+        with e ->
+          JS.console.warn (e)
 
-let makeText text = FraxineNode.Text text
+      for sub in subs do
+        try
+          sub.Dispose()
+        with e ->
+          JS.console.warn (e))
 
-let makeAdaptiveText text = FraxineNode.AdaptiveText text
+  setUpFraxineNode target child
+
+
+
+
+let makeNode useShadowDom tag (children: FraxineNode seq) =
+  let target = document.createElement tag
+
+  match useShadowDom with
+  | true ->
+    target.attachShadow (unbox box {| mode = EncapsulationMode.Open |})
+    |> ignore
+  | false -> ()
+
+  children |> Seq.iter (setupNode target)
+  target :> Element |> FraxineNode.Element
+
+let makeText text =
+  FraxineNode.Text(document.createTextNode text)
+
+let makeAdaptiveText text =
+  FraxineNode.AdaptiveNode(
+    text |> AVal.map (document.createTextNode >> FraxineNode.Text)
+  )
 
 let makeFragment () =
   FraxineNode.Fragment(document.createDocumentFragment ())
@@ -266,6 +301,9 @@ type FraxineEngine() =
 
   member this.text(value: aval<int>) =
     value |> AVal.map (fun value -> $"{value}") |> this.text
+
+  member _.adaptive(value: aval<FraxineNode>) = FraxineNode.AdaptiveNode value
+
 
 [<Literal>]
 let validCustomElementName =

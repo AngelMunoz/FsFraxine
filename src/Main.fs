@@ -8,7 +8,6 @@ open FraxineEngine
 
 let counter (initial: int) =
   let counter = cval (initial)
-  counter.AddCallback(fun v -> printfn $"{v}") |> ignore
 
   Html.section [
     Html.button [
@@ -29,10 +28,18 @@ let counter (initial: int) =
   ]
 
 let checkUncheck (show: cval<bool>) =
-  Html.section [
+  let message =
+    show
+    |> AVal.map (fun show ->
+      if show then Html.text "Showing!" else Html.text "hiding!")
+
+  Shadow.section [
+    Shadow.stylesheet (":host", [ Css.color "orange" ])
+    Shadow.stylesheet (":nth-child(even)", [ Css.color "green" ])
+
 
     Html.label [
-      Html.text "I should change!"
+      Html.text "I should change every 5 secods or when required!!"
       Html.input [
         Attr.isChecked show
         Attr.typeCheckbox
@@ -45,10 +52,13 @@ let checkUncheck (show: cval<bool>) =
       Html.text "Change me!"
       Html.input [
         Attr.typeCheckbox
+        Attr.isChecked show
         Event.onCheckedChange (fun event ->
           transact (fun () -> show.Value <- event))
       ]
     ]
+
+    Html.adaptive message
   ]
 
 let view =
