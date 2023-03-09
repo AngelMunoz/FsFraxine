@@ -2,7 +2,8 @@
   "$schema": "https://raw.githubusercontent.com/AngelMunoz/Perla/dev/perla.schema.json",
   "index": "./index.html",
   "fable": {
-    "project": "./src/App.fsproj"
+    "project": "./src/App.fsproj",
+    "sourceMaps": true
   },
   "mountDirectories": {
     "/src": "./src"
